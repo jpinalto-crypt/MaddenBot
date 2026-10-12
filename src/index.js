@@ -3,6 +3,11 @@ const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuild
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+app.get('/health', (req, res) => res.send('OK'));
+app.listen(PORT, () => console.log(`Health server on ${PORT}`));
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
