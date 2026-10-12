@@ -1,0 +1,20 @@
+{
+  "name": "madden-league-bot",
+  "version": "1.0.0",
+  "description": "Custom Madden Franchise Discord bot with league tracking, advances, standings, and more. Inspired by community tools, fully yours to extend.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "better-sqlite3": "^11.5.0",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
