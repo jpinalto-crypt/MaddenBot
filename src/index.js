@@ -412,14 +412,30 @@ async function tryFetchLeagues(accessToken) {
     });
     if (!entRes.ok) return 'Could not get entitlements.';
     const ents = await entRes.json();
-    const maddenEnt = (ents.entitlements || ents.entitlement || []).find(e => e.groupName && e.groupName.includes('MADDEN_27'));
+    const list = ents.entitlements || ents.entitlement || [];
+    const maddenEnt = list.find(e => e.groupName && e.groupName.includes('MADDEN_27'));
     if (!maddenEnt) return 'No Madden 27 entitlement found. Make sure you own Madden 27 on this account.';
 
-    return `Found Madden 27 entitlement (${maddenEnt.groupName}). Full league list requires the next Blaze step (still being finished).`;
+    // Step 5: try to get personas
+    const pidUri = maddenEnt.pidUri;
+    if (!pidUri) return `Found entitlement (${maddenEnt.groupName}) but no pidUri.`;
+
+    const personaRes = await fetch(`https://gateway.ea.com/proxy/identity${pidUri}/personas?status=ACTIVE&access_token=${accessToken}`, {
+      headers: {
+        'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 13; sdk_gphone_x86_64 Build/TE1A.220922.031)',
+        'X-Expand-Results': 'true'
+      }
+    });
+    if (!personaRes.ok) return `Found ${maddenEnt.groupName} but could not load personas.`;
+    const personaData = await personaRes.json();
+    const personas = personaData.personas || personaData.persona || [];
+    if (!personas.length) return 'Entitlement found but no personas returned.';
+
+    const names = personas.map(p => p.displayName || p.personaName || p.name || 'Unknown').slice(0, 5);
+    return `Found Madden 27 (${maddenEnt.groupName}). Personas: ${names.join(', ')}.\n\nFull franchise list still needs the Blaze session step. Use Companion App for now or I can keep building this.`;
   } catch (e) {
     return 'Error checking leagues: ' + e.message;
   }
 }
-
 
 client.login(TOKEN);
