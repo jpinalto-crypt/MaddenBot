@@ -30,8 +30,13 @@ db.exec(`
     coins INTEGER DEFAULT 0,
     wins INTEGER DEFAULT 0,
     losses INTEGER DEFAULT 0,
-    last_daily INTEGER DEFAULT 0
+    last_daily INTEGER DEFAULT 0,
+    superbowls_alltime INTEGER DEFAULT 0,
+    superbowls_current INTEGER DEFAULT 0
   );
+
+  -- Migration for existing DBs
+  PRAGMA table_info(users);
 
   CREATE TABLE IF NOT EXISTS shop (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +58,11 @@ db.exec(`
     window_start INTEGER DEFAULT 0
   );
 `);
+
+
+// Ensure new columns exist
+try { db.exec('ALTER TABLE users ADD COLUMN superbowls_alltime INTEGER DEFAULT 0'); } catch (e) {}
+try { db.exec('ALTER TABLE users ADD COLUMN superbowls_current INTEGER DEFAULT 0'); } catch (e) {}
 
 const shopCount = db.prepare('SELECT COUNT(*) as c FROM shop').get().c;
 if (shopCount === 0) {
@@ -161,6 +171,10 @@ const commands = [
     .addUserOption(o => o.setName('user').setDescription('Player')),
   new SlashCommandBuilder().setName('resetcooldown').setDescription('Reset a player’s game cooldown — Admin only')
     .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true)),
+  new SlashCommandBuilder().setName('addsuperbowl').setDescription('Add Super Bowl trophies to a user — Admin only')
+    .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true))
+    .addIntegerOption(o => o.setName('count').setDescription('Number of trophies (default 1)').setMinValue(1))
+    .addBooleanOption(o => o.setName('current').setDescription('Also count for current Madden season? (default true)')),
   new SlashCommandBuilder().setName('reset').setDescription('Reset a player’s coins and record — Admin only')
     .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true)),
   new SlashCommandBuilder().setName('award').setDescription('Manually give coins — Admin only')
@@ -221,7 +235,7 @@ client.on('interactionCreate', async interaction => {
   const userId = interaction.user.id;
   const cmd = interaction.commandName;
 
-  const adminCmds = ['win', 'loss', 'shopadd', 'shopprice', 'shopremove', 'reset', 'resetcooldown', 'award', 'fine'];
+  const adminCmds = ['win', 'loss', 'shopadd', 'shopprice', 'shopremove', 'reset', 'resetcooldown', 'award', 'fine', 'addsuperbowl'];
   if (adminCmds.includes(cmd) && !isAdmin(interaction)) {
     return interaction.reply({ content: 'You need Administrator permission to use this command.', ephemeral: true });
   }
@@ -438,6 +452,8 @@ client.on('interactionCreate', async interaction => {
       .addFields(
         { name: 'Coins', value: `${u.coins}`, inline: true },
         { name: 'Record', value: `${u.wins}W - ${u.losses}L`, inline: true },
+        { name: 'Super Bowls (All-Time)', value: `${u.superbowls_alltime || 0}`, inline: true },
+        { name: 'Super Bowls (This Madden)', value: `${u.superbowls_current || 0}`, inline: true },
         { name: 'Inventory', value: invText }
       )] });
   }
@@ -446,6 +462,19 @@ client.on('interactionCreate', async interaction => {
     const target = interaction.options.getUser('user');
     resetCooldown(target.id);
     return interaction.reply(`Reset game cooldown for ${target}.`);
+  }
+
+  if (cmd === 'addsuperbowl') {
+    const target = interaction.options.getUser('user');
+    const count = interaction.options.getInteger('count') || 1;
+    const current = interaction.options.getBoolean('current') !== false; // default true
+    getUser(target.id);
+    db.prepare('UPDATE users SET superbowls_alltime = superbowls_alltime + ? WHERE user_id = ?').run(count, target.id);
+    if (current) {
+      db.prepare('UPDATE users SET superbowls_current = superbowls_current + ? WHERE user_id = ?').run(count, target.id);
+    }
+    const u = getUser(target.id);
+    return interaction.reply(`Added **${count}** Super Bowl${count > 1 ? 's' : ''} to ${target}.\nAll-Time: ${u.superbowls_alltime} | This Madden: ${u.superbowls_current}`);
   }
 
   if (cmd === 'reset') {
@@ -536,7 +565,7 @@ client.on('interactionCreate', async interaction => {
         '**Economy:** /balance, /daily (1-20 coins), /give, /leaderboard, /stats',
         '**Shop:** /shop, /buy, /inventory, /use, /steal',
         '**Games:** /blackjack, /coinflip, /dice, /slots, /challengedice (best of 3)',
-        '**Admin:** /win, /loss, /award, /fine, /reset, /resetcooldown, /shopadd, /shopprice, /shopremove'
+        '**Admin:** /win, /loss, /award, /fine, /reset, /resetcooldown, /addsuperbowl, /shopadd, /shopprice, /shopremove'
       ].join('\n'))] });
   }
 });
