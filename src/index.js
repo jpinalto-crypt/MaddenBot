@@ -171,6 +171,10 @@ const commands = [
     .addUserOption(o => o.setName('user').setDescription('Player')),
   new SlashCommandBuilder().setName('resetcooldown').setDescription('Reset a player’s game cooldown — Admin only')
     .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true)),
+  new SlashCommandBuilder().setName('removesuperbowl').setDescription('Remove Super Bowl trophies from a user — Admin only')
+    .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true))
+    .addIntegerOption(o => o.setName('count').setDescription('Number to remove (default 1)').setMinValue(1))
+    .addBooleanOption(o => o.setName('current').setDescription('Also remove from current Madden season? (default true)')),
   new SlashCommandBuilder().setName('addsuperbowl').setDescription('Add Super Bowl trophies to a user — Admin only')
     .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true))
     .addIntegerOption(o => o.setName('count').setDescription('Number of trophies (default 1)').setMinValue(1))
@@ -235,7 +239,7 @@ client.on('interactionCreate', async interaction => {
   const userId = interaction.user.id;
   const cmd = interaction.commandName;
 
-  const adminCmds = ['win', 'loss', 'shopadd', 'shopprice', 'shopremove', 'reset', 'resetcooldown', 'award', 'fine', 'addsuperbowl'];
+  const adminCmds = ['win', 'loss', 'shopadd', 'shopprice', 'shopremove', 'reset', 'resetcooldown', 'award', 'fine', 'addsuperbowl', 'removesuperbowl'];
   if (adminCmds.includes(cmd) && !isAdmin(interaction)) {
     return interaction.reply({ content: 'You need Administrator permission to use this command.', ephemeral: true });
   }
@@ -464,6 +468,21 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply(`Reset game cooldown for ${target}.`);
   }
 
+  if (cmd === 'removesuperbowl') {
+    const target = interaction.options.getUser('user');
+    const count = interaction.options.getInteger('count') || 1;
+    const current = interaction.options.getBoolean('current') !== false;
+    const u = getUser(target.id);
+    const removeAll = Math.min(count, u.superbowls_alltime || 0);
+    const removeCurrent = current ? Math.min(count, u.superbowls_current || 0) : 0;
+    db.prepare('UPDATE users SET superbowls_alltime = MAX(0, superbowls_alltime - ?) WHERE user_id = ?').run(removeAll, target.id);
+    if (current) {
+      db.prepare('UPDATE users SET superbowls_current = MAX(0, superbowls_current - ?) WHERE user_id = ?').run(removeCurrent, target.id);
+    }
+    const updated = getUser(target.id);
+    return interaction.reply(`Removed **${removeAll}** Super Bowl${removeAll !== 1 ? 's' : ''} from ${target}.\nAll-Time: ${updated.superbowls_alltime} | This Madden: ${updated.superbowls_current}`);
+  }
+
   if (cmd === 'addsuperbowl') {
     const target = interaction.options.getUser('user');
     const count = interaction.options.getInteger('count') || 1;
@@ -565,7 +584,7 @@ client.on('interactionCreate', async interaction => {
         '**Economy:** /balance, /daily (1-20 coins), /give, /leaderboard, /stats',
         '**Shop:** /shop, /buy, /inventory, /use, /steal',
         '**Games:** /blackjack, /coinflip, /dice, /slots, /challengedice (best of 3)',
-        '**Admin:** /win, /loss, /award, /fine, /reset, /resetcooldown, /addsuperbowl, /shopadd, /shopprice, /shopremove'
+        '**Admin:** /win, /loss, /award, /fine, /reset, /resetcooldown, /addsuperbowl, /removesuperbowl, /shopadd, /shopprice, /shopremove'
       ].join('\n'))] });
   }
 });
