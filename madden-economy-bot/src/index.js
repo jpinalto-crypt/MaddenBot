@@ -36,7 +36,9 @@ async function initDb() {
       user_id TEXT PRIMARY KEY,
       coins INTEGER DEFAULT 0,
       wins INTEGER DEFAULT 0,
-      losses INTEGER DEFAULT 0
+      losses INTEGER DEFAULT 0,
+      superbowls_alltime INTEGER DEFAULT 0,
+      superbowls_current INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS shop (
@@ -54,15 +56,22 @@ async function initDb() {
     );
   `);
 
-  const shopCount = await db.execute('SELECT COUNT(*) as c FROM shop');
-  if (shopCount.rows[0].c === 0) {
-    await db.batch([
-      { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Extra Trade', 500, 'One additional trade this season'] },
-      { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Dev Upgrade', 750, 'Upgrade a player development trait'] },
-      { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Age Reduction', 600, 'Reduce a player age by 1 year'] },
-      { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Contract Reduction', 400, 'Reduce a contract by 20%'] },
-    ], 'write');
-  }
+  // Add columns if they don't exist yet (for existing databases)
+  try {
+    await db.execute('ALTER TABLE users ADD COLUMN superbowls_alltime INTEGER DEFAULT 0');
+  } catch (e) {}
+  try {
+    await db.execute('ALTER TABLE users ADD COLUMN superbowls_current INTEGER DEFAULT 0');
+  } catch (e) {}
+
+  // Clear and re-seed shop with the exact items you want
+  await db.execute('DELETE FROM shop');
+  await db.batch([
+    { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Theft', 95, 'Attempt to steal 1-200 coins from another user'] },
+    { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Contract Reduction', 400, 'Reduce a contract by 20%'] },
+    { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Age Reduction', 500, 'Reduce player age by 3'] },
+    { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Dev Upgrade', 750, 'Upgrade a player development trait'] },
+  ], 'write');
 }
 
 async function getUser(userId) {
@@ -88,6 +97,13 @@ const commands = [
     .setName('balance')
     .setDescription('Check your coin balance and record'),
   new SlashCommandBuilder()
+    .setName('stats')
+    .setDescription('View full stats for a user')
+    .addUserOption(o => o.setName('user').setDescription('User (leave blank for yourself)')),
+  new SlashCommandBuilder()
+    .setName('records')
+    .setDescription('Leaderboard sorted by win/loss record + Super Bowl trophies'),
+  new SlashCommandBuilder()
     .setName('win')
     .setDescription('Award a win (+100 coins) — Admin only')
     .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true))
@@ -106,12 +122,23 @@ const commands = [
     .addIntegerOption(o => o.setName('losses').setDescription('Total losses').setRequired(true).setMinValue(0))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder()
+    .setName('setsuperbowls')
+    .setDescription('Set Super Bowl counts — Admin only')
+    .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true))
+    .addIntegerOption(o => o.setName('alltime').setDescription('All-time Super Bowls').setRequired(true).setMinValue(0))
+    .addIntegerOption(o => o.setName('current').setDescription('This season Super Bowls').setRequired(true).setMinValue(0))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
     .setName('shop')
     .setDescription('View the shop'),
   new SlashCommandBuilder()
     .setName('buy')
     .setDescription('Buy an item from the shop')
     .addStringOption(o => o.setName('item').setDescription('Item name').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('theft')
+    .setDescription('Use a Theft item to try stealing coins from someone')
+    .addUserOption(o => o.setName('target').setDescription('User to steal from').setRequired(true)),
   new SlashCommandBuilder()
     .setName('inventory')
     .setDescription('View your purchased items'),
@@ -141,18 +168,19 @@ const commands = [
   new SlashCommandBuilder()
     .setName('dice')
     .setDescription('Roll dice and bet coins (higher than bot wins, max 300)')
-    .addIntegerOption(o => o.setName('bet').setDescription('Amount to bet (10-300)').setRequired(true).setMinValue(10).setMaxValue(MAX_BET))
+    .addIntegerOption(o => o.setName('bet').setDescription('Amount to bet (10-300)').setRequired(true).setMinValue(10).setMaxValue(MAX_BET)),
+  new SlashCommandBuilder()
+    .setName('leaderboard')
+    .setDescription('Record leaderboard sorted by win percentage (shows Super Bowls)')
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 async function registerCommands() {
   try {
-    // Clear old global commands first so they don't conflict
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
     console.log('Cleared old global commands');
 
-    // Register current commands for the guild (instant) or globally
     if (GUILD_ID) {
       await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
       console.log('Guild commands registered');
@@ -171,7 +199,6 @@ client.on('ready', async () => {
   await registerCommands();
 });
 
-// Simple card helpers for blackjack
 function drawCard() {
   const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
   const suits = ['♠', '♥', '♦', '♣'];
@@ -206,6 +233,54 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply({ embeds: [embed] });
   }
 
+  if (interaction.commandName === 'stats') {
+    const target = interaction.options.getUser('user') || interaction.user;
+    const u = await getUser(target.id);
+    const embed = new EmbedBuilder()
+      .setTitle(`${target.username}'s Full Stats`)
+      .setColor(0x0099ff)
+      .addFields(
+        { name: 'Coins', value: `${u.coins}`, inline: true },
+        { name: 'Record', value: `${u.wins}W - ${u.losses}L`, inline: true },
+        { name: 'Super Bowls (All-time)', value: `${u.superbowls_alltime || 0}`, inline: true },
+        { name: 'Super Bowls (This Season)', value: `${u.superbowls_current || 0}`, inline: true }
+      );
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  if (interaction.commandName === 'records') {
+    const result = await db.execute(`
+      SELECT user_id, wins, losses, superbowls_alltime, superbowls_current
+      FROM users
+      WHERE wins > 0 OR losses > 0
+      ORDER BY wins DESC, (wins * 1.0 / (wins + losses)) DESC
+      LIMIT 15
+    `);
+
+    if (!result.rows.length) return interaction.reply('No records yet.');
+
+    const lines = [];
+    for (let i = 0; i < result.rows.length; i++) {
+      const row = result.rows[i];
+      let name = `<@${row.user_id}>`;
+      try {
+        const member = await interaction.guild.members.fetch(row.user_id);
+        name = member.displayName || member.user.username;
+      } catch {}
+      const total = row.wins + row.losses;
+      const pct = total > 0 ? ((row.wins / total) * 100).toFixed(1) : '0.0';
+      const trophies = `🏆 ${row.superbowls_current || 0} current · ${row.superbowls_alltime || 0} all-time`;
+      lines.push(`**${i + 1}.** ${name} — ${row.wins}W-${row.losses}L (${pct}%)\n${trophies}`);
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('Record Leaderboard')
+      .setDescription(lines.join('\n\n'))
+      .setColor(0xffd700)
+      .setFooter({ text: 'Sorted by wins, then win %' });
+    return interaction.reply({ embeds: [embed] });
+  }
+
   if (interaction.commandName === 'win') {
     const target = interaction.options.getUser('user');
     await getUser(target.id);
@@ -235,6 +310,18 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply(`Updated **${target.username}**: ${coins} coins, ${wins}W - ${losses}L`);
   }
 
+  if (interaction.commandName === 'setsuperbowls') {
+    const target = interaction.options.getUser('user');
+    const alltime = interaction.options.getInteger('alltime');
+    const current = interaction.options.getInteger('current');
+    await getUser(target.id);
+    await db.execute({
+      sql: 'UPDATE users SET superbowls_alltime = ?, superbowls_current = ? WHERE user_id = ?',
+      args: [alltime, current, target.id]
+    });
+    return interaction.reply(`Updated **${target.username}** Super Bowls: ${alltime} all-time, ${current} this season`);
+  }
+
   if (interaction.commandName === 'shop') {
     const items = await db.execute('SELECT * FROM shop ORDER BY price');
     if (!items.rows.length) return interaction.reply('Shop is empty.');
@@ -262,6 +349,23 @@ client.on('interactionCreate', async interaction => {
     });
     const newBal = u.coins - item.price;
     return interaction.reply(`Purchased **${item.name}** for ${item.price} coins. Remaining: ${newBal}`);
+  }
+
+  if (interaction.commandName === 'theft') {
+    const target = interaction.options.getUser('target');
+    if (target.id === userId) return interaction.reply('You can\'t steal from yourself.');
+    const inv = await db.execute({ sql: 'SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?', args: [userId, 'Theft'] });
+    if (!inv.rows.length || inv.rows[0].quantity < 1) return interaction.reply('You need a Theft item. Buy one from /shop.');
+    const victim = await getUser(target.id);
+    if (victim.coins < 1) return interaction.reply(`${target.username} has no coins to steal.`);
+
+    const stealAmount = Math.floor(Math.random() * 200) + 1;
+    const actual = Math.min(stealAmount, victim.coins);
+    await db.execute({ sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ?', args: [actual, target.id] });
+    await addCoins(userId, actual);
+    await db.execute({ sql: 'UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?', args: [userId, 'Theft'] });
+
+    return interaction.reply(`You used Theft and stole **${actual}** coins from ${target}!`);
   }
 
   if (interaction.commandName === 'inventory') {
@@ -361,6 +465,35 @@ client.on('interactionCreate', async interaction => {
         )
         .setColor(win ? 0x00ff00 : 0xff0000)]
     });
+  }
+
+  if (interaction.commandName === 'leaderboard') {
+    const result = await db.execute('SELECT user_id, wins, losses, superbowls_alltime, superbowls_current FROM users WHERE (wins + losses) > 0');
+    if (!result.rows.length) return interaction.reply('No records yet.');
+
+    const sorted = result.rows
+      .map(u => {
+        const total = u.wins + u.losses;
+        const winPct = total > 0 ? (u.wins / total) * 100 : 0;
+        return { ...u, winPct, total };
+      })
+      .sort((a, b) => b.winPct - a.winPct || b.wins - a.wins)
+      .slice(0, 15);
+
+    const lines = await Promise.all(sorted.map(async (u, i) => {
+      const member = await interaction.guild.members.fetch(u.user_id).catch(() => null);
+      const name = member ? member.displayName : `User ${u.user_id.slice(-4)}`;
+      const trophies = `🏆${u.superbowls_current || 0} (S) / ${u.superbowls_alltime || 0} (AT)`;
+      return `**${i + 1}.** ${name} — ${u.wins}W-${u.losses}L (${u.winPct.toFixed(1)}%) ${trophies}`;
+    }));
+
+    const embed = new EmbedBuilder()
+      .setTitle('Record Leaderboard')
+      .setDescription(lines.join('\n'))
+      .setColor(0xffd700)
+      .setFooter({ text: 'Sorted by win % • 🏆 = Super Bowls (S = this season, AT = all-time)' });
+
+    return interaction.reply({ embeds: [embed] });
   }
 
   if (interaction.commandName === 'dice') {
