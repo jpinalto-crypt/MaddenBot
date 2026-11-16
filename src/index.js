@@ -81,7 +81,8 @@ async function initDb() {
   // Re-seed shop
   await db.execute('DELETE FROM shop');
   await db.batch([
-    { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Theft', 95, 'Attempt to steal 1-200 coins from another user'] },
+    { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Theft', 200, 'Attempt to steal 10-350 coins or an item from another user'] },
+    { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Insurance', 150, 'Blocks one theft attempt (consumed on use)'] },
     { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Contract Reduction', 400, 'Reduce a contract by 20%'] },
     { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Age Reduction', 500, 'Reduce player age by 3'] },
     { sql: 'INSERT INTO shop (name, price, description) VALUES (?, ?, ?)', args: ['Dev Upgrade', 750, 'Upgrade a player development trait'] },
@@ -439,15 +440,40 @@ client.on('interactionCreate', async interaction => {
   if (interaction.commandName === 'theft') {
     const target = interaction.options.getUser('target');
     if (target.id === userId) return interaction.reply('Can\'t steal from yourself.');
+
     const inv = await db.execute({ sql: 'SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?', args: [userId, 'Theft'] });
     if (!inv.rows.length || inv.rows[0].quantity < 1) return interaction.reply('You need a Theft item.');
+
+    // Always consume the Theft item
+    await db.execute({ sql: 'UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?', args: [userId, 'Theft'] });
+
+    // Check if target has Insurance
+    const insurance = await db.execute({ sql: 'SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?', args: [target.id, 'Insurance'] });
+    if (insurance.rows.length && insurance.rows[0].quantity > 0) {
+      await db.execute({ sql: 'UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?', args: [target.id, 'Insurance'] });
+      return interaction.reply(`${target} had **Insurance**! Your theft attempt was blocked. (Insurance used up)`);
+    }
+
+    // 35% chance to steal an item instead
+    const targetItems = await db.execute({ sql: 'SELECT item_name, quantity FROM inventory WHERE user_id = ? AND quantity > 0 AND item_name != ?', args: [target.id, 'Insurance'] });
+    if (Math.random() < 0.35 && targetItems.rows.length > 0) {
+      const randomItem = targetItems.rows[Math.floor(Math.random() * targetItems.rows.length)];
+      await db.execute({ sql: 'UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?', args: [target.id, randomItem.item_name] });
+      await db.execute({
+        sql: `INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)
+              ON CONFLICT(user_id, item_name) DO UPDATE SET quantity = quantity + 1`,
+        args: [userId, randomItem.item_name]
+      });
+      return interaction.reply(`You stole **1x ${randomItem.item_name}** from ${target}!`);
+    }
+
+    // Otherwise steal coins (10-350)
     const victim = await getUser(target.id);
-    if (victim.coins < 1) return interaction.reply('Target has no coins.');
-    const steal = Math.min(Math.floor(Math.random() * 200) + 1, victim.coins);
+    if (victim.coins < 10) return interaction.reply(`${target} doesn't have enough coins to steal from.`);
+    const steal = Math.min(Math.floor(Math.random() * 341) + 10, victim.coins); // 10 to 350
     await db.execute({ sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ?', args: [steal, target.id] });
     await addCoins(userId, steal);
-    await db.execute({ sql: 'UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?', args: [userId, 'Theft'] });
-    return interaction.reply(`Stole **${steal}** coins from ${target}!`);
+    return interaction.reply(`You stole **${steal}** coins from ${target}!`);
   }
 
   if (interaction.commandName === 'inventory') {
