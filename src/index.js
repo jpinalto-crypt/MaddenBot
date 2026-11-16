@@ -171,7 +171,10 @@ const commands = [
     .addIntegerOption(o => o.setName('bet').setDescription('Amount to bet (10-300)').setRequired(true).setMinValue(10).setMaxValue(MAX_BET)),
   new SlashCommandBuilder()
     .setName('leaderboard')
-    .setDescription('Record leaderboard sorted by win percentage (shows Super Bowls)')
+    .setDescription('Record leaderboard sorted by win percentage (shows Super Bowls)'),
+  new SlashCommandBuilder()
+    .setName('richest')
+    .setDescription('Coin leaderboard — who has the most coins')
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -465,6 +468,25 @@ client.on('interactionCreate', async interaction => {
         )
         .setColor(win ? 0x00ff00 : 0xff0000)]
     });
+  }
+
+  if (interaction.commandName === 'richest') {
+    const result = await db.execute('SELECT user_id, coins FROM users WHERE coins > 0 ORDER BY coins DESC LIMIT 15');
+    if (!result.rows.length) return interaction.reply('No one has any coins yet.');
+
+    const lines = await Promise.all(result.rows.map(async (u, i) => {
+      const member = await interaction.guild.members.fetch(u.user_id).catch(() => null);
+      const name = member ? member.displayName : `User ${u.user_id.slice(-4)}`;
+      return `**${i + 1}.** ${name} — ${u.coins.toLocaleString()} coins`;
+    }));
+
+    const embed = new EmbedBuilder()
+      .setTitle('Richest Players')
+      .setDescription(lines.join('\n'))
+      .setColor(0x00ff00)
+      .setFooter({ text: 'Top 15 by coin balance' });
+
+    return interaction.reply({ embeds: [embed] });
   }
 
   if (interaction.commandName === 'leaderboard') {
