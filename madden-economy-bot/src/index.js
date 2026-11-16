@@ -421,6 +421,26 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply({ embeds: [embed] });
   }
 
+  if (interaction.commandName === 'shopadd') {
+    const name = interaction.options.getString('name');
+    const price = interaction.options.getInteger('price');
+    const desc = interaction.options.getString('description') || '';
+    await db.execute({
+      sql: `INSERT INTO shop (name, price, description) VALUES (?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET price = excluded.price, description = excluded.description`,
+      args: [name, price, desc]
+    });
+    return interaction.reply(`Shop item **${name}** set to ${price} coins.`);
+  }
+
+  if (interaction.commandName === 'shopprice') {
+    const name = interaction.options.getString('name');
+    const price = interaction.options.getInteger('price');
+    const result = await db.execute({ sql: 'UPDATE shop SET price = ? WHERE lower(name) = lower(?)', args: [price, name] });
+    if (result.rowsAffected === 0) return interaction.reply('Item not found.');
+    return interaction.reply(`Updated **${name}** price to ${price} coins.`);
+  }
+
   if (interaction.commandName === 'buy') {
     const itemName = interaction.options.getString('item');
     const itemResult = await db.execute({ sql: 'SELECT * FROM shop WHERE lower(name) = lower(?)', args: [itemName] });
