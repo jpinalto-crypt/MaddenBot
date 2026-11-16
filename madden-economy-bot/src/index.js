@@ -9,6 +9,8 @@ const PORT = process.env.PORT || 3000;
 app.get('/health', (req, res) => res.send('OK'));
 app.listen(PORT, () => console.log(`Health server on ${PORT}`));
 
+const MAX_BET = 300;
+
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
@@ -113,18 +115,18 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder()
     .setName('blackjack')
-    .setDescription('Play blackjack and bet coins')
-    .addIntegerOption(o => o.setName('bet').setDescription('Amount to bet').setRequired(true).setMinValue(10)),
+    .setDescription('Play blackjack and bet coins (max 300)')
+    .addIntegerOption(o => o.setName('bet').setDescription('Amount to bet (10-300)').setRequired(true).setMinValue(10).setMaxValue(MAX_BET)),
   new SlashCommandBuilder()
     .setName('coinflip')
-    .setDescription('Flip a coin and bet coins')
-    .addIntegerOption(o => o.setName('bet').setDescription('Amount to bet').setRequired(true).setMinValue(10))
+    .setDescription('Flip a coin and bet coins (max 300)')
+    .addIntegerOption(o => o.setName('bet').setDescription('Amount to bet (10-300)').setRequired(true).setMinValue(10).setMaxValue(MAX_BET))
     .addStringOption(o => o.setName('side').setDescription('heads or tails').setRequired(true)
       .addChoices({ name: 'Heads', value: 'heads' }, { name: 'Tails', value: 'tails' })),
   new SlashCommandBuilder()
     .setName('dice')
-    .setDescription('Roll dice and bet coins (higher than bot wins)')
-    .addIntegerOption(o => o.setName('bet').setDescription('Amount to bet').setRequired(true).setMinValue(10))
+    .setDescription('Roll dice and bet coins (higher than bot wins, max 300)')
+    .addIntegerOption(o => o.setName('bet').setDescription('Amount to bet (10-300)').setRequired(true).setMinValue(10).setMaxValue(MAX_BET))
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -250,6 +252,7 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.commandName === 'blackjack') {
     const bet = interaction.options.getInteger('bet');
+    if (bet > MAX_BET) return interaction.reply(`Max bet is ${MAX_BET} coins.`);
     const u = getUser(userId);
     if (u.coins < bet) return interaction.reply(`Not enough coins. You have ${u.coins}.`);
 
@@ -297,6 +300,7 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.commandName === 'coinflip') {
     const bet = interaction.options.getInteger('bet');
+    if (bet > MAX_BET) return interaction.reply(`Max bet is ${MAX_BET} coins.`);
     const side = interaction.options.getString('side');
     const u = getUser(userId);
     if (u.coins < bet) return interaction.reply(`Not enough coins. You have ${u.coins}.`);
@@ -320,6 +324,7 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.commandName === 'dice') {
     const bet = interaction.options.getInteger('bet');
+    if (bet > MAX_BET) return interaction.reply(`Max bet is ${MAX_BET} coins.`);
     const u = getUser(userId);
     if (u.coins < bet) return interaction.reply(`Not enough coins. You have ${u.coins}.`);
 
