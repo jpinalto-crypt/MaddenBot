@@ -148,12 +148,18 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 async function registerCommands() {
   try {
+    // Clear old global commands first so they don't conflict
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
+    console.log('Cleared old global commands');
+
+    // Register current commands for the guild (instant) or globally
     if (GUILD_ID) {
       await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+      console.log('Guild commands registered');
     } else {
       await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+      console.log('Global commands registered');
     }
-    console.log('Commands registered');
   } catch (e) {
     console.error(e);
   }
