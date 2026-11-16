@@ -146,6 +146,11 @@ const commands = [
     .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true))
     .addIntegerOption(o => o.setName('amount').setDescription('Amount').setRequired(true).setMinValue(1))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('giveitem').setDescription('Give an item to a user\'s inventory — Admin only')
+    .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true))
+    .addStringOption(o => o.setName('item').setDescription('Item name').setRequired(true))
+    .addIntegerOption(o => o.setName('quantity').setDescription('How many').setRequired(true).setMinValue(1))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('bet').setDescription('Place a bet on a game')
     .addStringOption(o => o.setName('game').setDescription('Game name (e.g. Week 5 vs Team)').setRequired(true))
     .addStringOption(o => o.setName('pick').setDescription('Your pick (team or player)').setRequired(true))
@@ -355,6 +360,19 @@ client.on('interactionCreate', async interaction => {
     const take = Math.min(amount, u.coins);
     await db.execute({ sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ?', args: [take, target.id] });
     return interaction.reply(`Took **${take}** coins from ${target}.`);
+  }
+
+  if (interaction.commandName === 'giveitem') {
+    const target = interaction.options.getUser('user');
+    const item = interaction.options.getString('item');
+    const quantity = interaction.options.getInteger('quantity');
+    await getUser(target.id);
+    await db.execute({
+      sql: `INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, ?)
+            ON CONFLICT(user_id, item_name) DO UPDATE SET quantity = quantity + ?`,
+      args: [target.id, item, quantity, quantity]
+    });
+    return interaction.reply(`Gave **${quantity}x ${item}** to ${target}.`);
   }
 
   if (interaction.commandName === 'bet') {
