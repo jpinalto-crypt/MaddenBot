@@ -152,6 +152,11 @@ const commands = [
     .addStringOption(o => o.setName('item').setDescription('Item name').setRequired(true))
     .addIntegerOption(o => o.setName('quantity').setDescription('How many').setRequired(true).setMinValue(1))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('useitem').setDescription('Use/consume an item from a user\'s inventory — Admin only')
+    .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true))
+    .addStringOption(o => o.setName('item').setDescription('Item name').setRequired(true))
+    .addIntegerOption(o => o.setName('quantity').setDescription('How many to use').setRequired(false).setMinValue(1))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('bet').setDescription('Place a bet on a game')
     .addStringOption(o => o.setName('game').setDescription('Game name (e.g. Week 5 vs Team)').setRequired(true))
     .addStringOption(o => o.setName('pick').setDescription('Your pick (team or player)').setRequired(true))
@@ -374,6 +379,18 @@ client.on('interactionCreate', async interaction => {
       args: [target.id, item, quantity, quantity]
     });
     return interaction.reply(`Gave **${quantity}x ${item}** to ${target}.`);
+  }
+
+  if (interaction.commandName === 'useitem') {
+    const target = interaction.options.getUser('user');
+    const item = interaction.options.getString('item');
+    const quantity = interaction.options.getInteger('quantity') || 1;
+    const inv = await db.execute({ sql: 'SELECT quantity FROM inventory WHERE user_id = ? AND lower(item_name) = lower(?)', args: [target.id, item] });
+    if (!inv.rows.length || inv.rows[0].quantity < quantity) {
+      return interaction.reply(`${target} doesn't have enough **${item}** (has ${inv.rows[0]?.quantity || 0}).`);
+    }
+    await db.execute({ sql: 'UPDATE inventory SET quantity = quantity - ? WHERE user_id = ? AND lower(item_name) = lower(?)', args: [quantity, target.id, item] });
+    return interaction.reply(`Used **${quantity}x ${item}** from ${target}'s inventory.`);
   }
 
   if (interaction.commandName === 'bet') {
