@@ -61,11 +61,13 @@ async function initDb() {
 
     CREATE TABLE IF NOT EXISTS bets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT,
+      creator_id TEXT,
+      acceptor_id TEXT,
       game TEXT,
-      pick TEXT,
+      creator_pick TEXT,
       amount INTEGER,
-      resolved INTEGER DEFAULT 0
+      status TEXT DEFAULT 'open',
+      winner_id TEXT
     );
   `);
 
@@ -157,14 +159,16 @@ const commands = [
     .addStringOption(o => o.setName('item').setDescription('Item name').setRequired(true))
     .addIntegerOption(o => o.setName('quantity').setDescription('How many to use').setRequired(false).setMinValue(1))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-  new SlashCommandBuilder().setName('bet').setDescription('Place a bet on a game')
+  new SlashCommandBuilder().setName('bet').setDescription('Create an open bet for someone to accept')
     .addStringOption(o => o.setName('game').setDescription('Game name (e.g. Week 5 vs Team)').setRequired(true))
     .addStringOption(o => o.setName('pick').setDescription('Your pick (team or player)').setRequired(true))
     .addIntegerOption(o => o.setName('amount').setDescription('Coins to bet').setRequired(true).setMinValue(10)),
   new SlashCommandBuilder().setName('bets').setDescription('View open bets'),
-  new SlashCommandBuilder().setName('resolvebet').setDescription('Resolve a bet and pay winner — Admin only')
+  new SlashCommandBuilder().setName('acceptbet').setDescription('Accept an open bet')
+    .addIntegerOption(o => o.setName('id').setDescription('Bet ID').setRequired(true)),
+  new SlashCommandBuilder().setName('resolvebet').setDescription('Resolve an accepted bet — Admin only')
     .addIntegerOption(o => o.setName('id').setDescription('Bet ID').setRequired(true))
-    .addBooleanOption(o => o.setName('won').setDescription('Did they win?').setRequired(true))
+    .addUserOption(o => o.setName('winner').setDescription('Who won the bet').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('shop').setDescription('View the shop'),
   new SlashCommandBuilder().setName('buy').setDescription('Buy an item from the shop')
@@ -401,33 +405,47 @@ client.on('interactionCreate', async interaction => {
     if (u.coins < amount) return interaction.reply(`Not enough coins. You have ${u.coins}.`);
     await db.execute({ sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ?', args: [amount, userId] });
     const res = await db.execute({
-      sql: 'INSERT INTO bets (user_id, game, pick, amount) VALUES (?, ?, ?, ?)',
-      args: [userId, game, pick, amount]
+      sql: 'INSERT INTO bets (creator_id, game, creator_pick, amount, status) VALUES (?, ?, ?, ?, ?)',
+      args: [userId, game, pick, amount, 'open']
     });
-    return interaction.reply(`Bet **${amount}** on **${pick}** for "${game}" (Bet ID: ${res.lastInsertRowid})`);
+    return interaction.reply(`Open bet created! **${amount}** coins on **${pick}** for "${game}" (Bet ID: ${res.lastInsertRowid}). Waiting for someone to accept.`);
   }
 
   if (interaction.commandName === 'bets') {
-    const result = await db.execute('SELECT * FROM bets WHERE resolved = 0 ORDER BY id DESC LIMIT 10');
-    if (!result.rows.length) return interaction.reply('No open bets.');
-    const lines = result.rows.map(b => `**#${b.id}** ${b.game} — ${b.pick} (${b.amount} coins)`);
-    return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Open Bets').setDescription(lines.join('\n'))] });
+    const result = await db.execute({ sql: 'SELECT * FROM bets WHERE status = ? ORDER BY id DESC LIMIT 15', args: ['open'] });
+    if (!result.rows.length) return interaction.reply('No open bets right now.');
+    const lines = await Promise.all(result.rows.map(async (b) => {
+      const creator = await interaction.guild.members.fetch(b.creator_id).catch(() => null);
+      const name = creator ? creator.displayName : 'Someone';
+      return `**#${b.id}** ${name} bet **${b.amount}** on **${b.creator_pick}** — "${b.game}"`;
+    }));
+    return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Open Bets (waiting for acceptance)').setDescription(lines.join('\n')).setColor(0xffaa00)] });
+  }
+
+  if (interaction.commandName === 'acceptbet') {
+    const id = interaction.options.getInteger('id');
+    const betRes = await db.execute({ sql: 'SELECT * FROM bets WHERE id = ? AND status = ?', args: [id, 'open'] });
+    if (!betRes.rows.length) return interaction.reply('Bet not found or already accepted.');
+    const b = betRes.rows[0];
+    if (b.creator_id === userId) return interaction.reply('You can\'t accept your own bet.');
+    const u = await getUser(userId);
+    if (u.coins < b.amount) return interaction.reply(`Not enough coins. You need ${b.amount}.`);
+    await db.execute({ sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ?', args: [b.amount, userId] });
+    await db.execute({ sql: 'UPDATE bets SET acceptor_id = ?, status = ? WHERE id = ?', args: [userId, 'accepted', id] });
+    return interaction.reply(`You accepted bet **#${id}**! Pot is now **${b.amount * 2}** coins. Waiting for admin to resolve.`);
   }
 
   if (interaction.commandName === 'resolvebet') {
     const id = interaction.options.getInteger('id');
-    const won = interaction.options.getBoolean('won');
-    const bet = await db.execute({ sql: 'SELECT * FROM bets WHERE id = ? AND resolved = 0', args: [id] });
-    if (!bet.rows.length) return interaction.reply('Bet not found or already resolved.');
-    const b = bet.rows[0];
-    if (won) {
-      await addCoins(b.user_id, b.amount * 2);
-      await db.execute({ sql: 'UPDATE bets SET resolved = 1 WHERE id = ?', args: [id] });
-      return interaction.reply(`Bet #${id} won! Paid ${b.amount * 2} coins.`);
-    } else {
-      await db.execute({ sql: 'UPDATE bets SET resolved = 1 WHERE id = ?', args: [id] });
-      return interaction.reply(`Bet #${id} lost.`);
-    }
+    const winner = interaction.options.getUser('winner');
+    const betRes = await db.execute({ sql: 'SELECT * FROM bets WHERE id = ? AND status = ?', args: [id, 'accepted'] });
+    if (!betRes.rows.length) return interaction.reply('Bet not found or not yet accepted.');
+    const b = betRes.rows[0];
+    if (winner.id !== b.creator_id && winner.id !== b.acceptor_id) return interaction.reply('Winner must be one of the two bettors.');
+    const payout = b.amount * 2;
+    await addCoins(winner.id, payout);
+    await db.execute({ sql: 'UPDATE bets SET status = ?, winner_id = ? WHERE id = ?', args: ['resolved', winner.id, id] });
+    return interaction.reply(`Bet **#${id}** resolved! ${winner} wins **${payout}** coins.`);
   }
 
   if (interaction.commandName === 'shop') {
