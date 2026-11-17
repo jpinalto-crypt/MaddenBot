@@ -33,6 +33,11 @@ const db = createClient({
 });
 
 async function initDb() {
+  // Drop old bets table if it exists with outdated schema and recreate
+  try {
+    await db.execute('DROP TABLE IF EXISTS bets');
+  } catch (e) {}
+
   await db.executeMultiple(`
     CREATE TABLE IF NOT EXISTS users (
       user_id TEXT PRIMARY KEY,
