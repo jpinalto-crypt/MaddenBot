@@ -175,6 +175,9 @@ const commands = [
     .addIntegerOption(o => o.setName('id').setDescription('Bet ID').setRequired(true))
     .addUserOption(o => o.setName('winner').setDescription('Who won the bet').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('cancelbet').setDescription('Cancel an open bet and refund — Admin only')
+    .addIntegerOption(o => o.setName('id').setDescription('Bet ID').setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('shop').setDescription('View the shop'),
   new SlashCommandBuilder().setName('buy').setDescription('Buy an item from the shop')
     .addStringOption(o => o.setName('item').setDescription('Item name').setRequired(true)),
@@ -451,6 +454,16 @@ client.on('interactionCreate', async interaction => {
     await addCoins(winner.id, payout);
     await db.execute({ sql: 'UPDATE bets SET status = ?, winner_id = ? WHERE id = ?', args: ['resolved', winner.id, id] });
     return interaction.reply(`Bet **#${id}** resolved! ${winner} wins **${payout}** coins.`);
+  }
+
+  if (interaction.commandName === 'cancelbet') {
+    const id = interaction.options.getInteger('id');
+    const betRes = await db.execute({ sql: 'SELECT * FROM bets WHERE id = ? AND status = ?', args: [id, 'open'] });
+    if (!betRes.rows.length) return interaction.reply('Bet not found or already accepted/resolved.');
+    const b = betRes.rows[0];
+    await addCoins(b.creator_id, b.amount);
+    await db.execute({ sql: 'UPDATE bets SET status = ? WHERE id = ?', args: ['cancelled', id] });
+    return interaction.reply(`Bet **#${id}** cancelled. Refunded **${b.amount}** coins to the creator.`);
   }
 
   if (interaction.commandName === 'shop') {
