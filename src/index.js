@@ -74,6 +74,25 @@ async function initDb() {
       status TEXT DEFAULT 'open',
       winner_id TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS spread_games (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game TEXT,
+      favorite TEXT,
+      underdog TEXT,
+      spread REAL,
+      status TEXT DEFAULT 'open',
+      winner TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS spread_bets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id INTEGER,
+      user_id TEXT,
+      pick TEXT,
+      amount INTEGER,
+      status TEXT DEFAULT 'open'
+    );
   `);
 
   // Add columns if missing
@@ -177,6 +196,21 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('cancelbet').setDescription('Cancel an open bet and refund — Admin only')
     .addIntegerOption(o => o.setName('id').setDescription('Bet ID').setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('createspread').setDescription('Create a spread game for betting — Admin only')
+    .addStringOption(o => o.setName('game').setDescription('Game name (e.g. Chiefs vs Bills)').setRequired(true))
+    .addStringOption(o => o.setName('favorite').setDescription('Favorite team').setRequired(true))
+    .addStringOption(o => o.setName('underdog').setDescription('Underdog team').setRequired(true))
+    .addNumberOption(o => o.setName('spread').setDescription('Spread (e.g. 3.5)').setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('spreads').setDescription('View open spread games'),
+  new SlashCommandBuilder().setName('betspread').setDescription('Bet on a spread game (max 100)')
+    .addIntegerOption(o => o.setName('id').setDescription('Spread game ID').setRequired(true))
+    .addStringOption(o => o.setName('pick').setDescription('Team you think covers').setRequired(true))
+    .addIntegerOption(o => o.setName('amount').setDescription('Amount (max 100)').setRequired(true).setMinValue(10).setMaxValue(100)),
+  new SlashCommandBuilder().setName('resolvespread').setDescription('Resolve a spread game — Admin only')
+    .addIntegerOption(o => o.setName('id').setDescription('Spread game ID').setRequired(true))
+    .addStringOption(o => o.setName('winner').setDescription('Team that covered the spread').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('shop').setDescription('View the shop'),
   new SlashCommandBuilder().setName('buy').setDescription('Buy an item from the shop')
@@ -464,6 +498,67 @@ client.on('interactionCreate', async interaction => {
     await addCoins(b.creator_id, b.amount);
     await db.execute({ sql: 'UPDATE bets SET status = ? WHERE id = ?', args: ['cancelled', id] });
     return interaction.reply(`Bet **#${id}** cancelled. Refunded **${b.amount}** coins to the creator.`);
+  }
+
+  if (interaction.commandName === 'createspread') {
+    const game = interaction.options.getString('game');
+    const favorite = interaction.options.getString('favorite');
+    const underdog = interaction.options.getString('underdog');
+    const spread = interaction.options.getNumber('spread');
+    const res = await db.execute({
+      sql: 'INSERT INTO spread_games (game, favorite, underdog, spread) VALUES (?, ?, ?, ?)',
+      args: [game, favorite, underdog, spread]
+    });
+    return interaction.reply(`Spread game created: **${game}** — ${favorite} -${spread} (ID: ${res.lastInsertRowid})`);
+  }
+
+  if (interaction.commandName === 'spreads') {
+    const result = await db.execute({ sql: 'SELECT * FROM spread_games WHERE status = ? ORDER BY id DESC LIMIT 10', args: ['open'] });
+    if (!result.rows.length) return interaction.reply('No open spread games.');
+    const lines = result.rows.map(g => `**#${g.id}** ${g.game}\n${g.favorite} -${g.spread} vs ${g.underdog}`);
+    return interaction.reply({ embeds: [new EmbedBuilder().setTitle('Open Spread Games').setDescription(lines.join('\n\n')).setColor(0x00aaff)] });
+  }
+
+  if (interaction.commandName === 'betspread') {
+    const id = interaction.options.getInteger('id');
+    const pick = interaction.options.getString('pick');
+    const amount = interaction.options.getInteger('amount');
+    const gameRes = await db.execute({ sql: 'SELECT * FROM spread_games WHERE id = ? AND status = ?', args: [id, 'open'] });
+    if (!gameRes.rows.length) return interaction.reply('Spread game not found or closed.');
+    const g = gameRes.rows[0];
+    if (pick.toLowerCase() !== g.favorite.toLowerCase() && pick.toLowerCase() !== g.underdog.toLowerCase()) {
+      return interaction.reply(`Pick must be **${g.favorite}** or **${g.underdog}**.`);
+    }
+    const u = await getUser(userId);
+    if (u.coins < amount) return interaction.reply(`Not enough coins. You have ${u.coins}.`);
+    await db.execute({ sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ?', args: [amount, userId] });
+    await db.execute({
+      sql: 'INSERT INTO spread_bets (game_id, user_id, pick, amount) VALUES (?, ?, ?, ?)',
+      args: [id, userId, pick, amount]
+    });
+    return interaction.reply(`Bet **${amount}** coins on **${pick}** to cover in game #${id}.`);
+  }
+
+  if (interaction.commandName === 'resolvespread') {
+    const id = interaction.options.getInteger('id');
+    const winner = interaction.options.getString('winner');
+    const gameRes = await db.execute({ sql: 'SELECT * FROM spread_games WHERE id = ? AND status = ?', args: [id, 'open'] });
+    if (!gameRes.rows.length) return interaction.reply('Spread game not found or already resolved.');
+    const g = gameRes.rows[0];
+    if (winner.toLowerCase() !== g.favorite.toLowerCase() && winner.toLowerCase() !== g.underdog.toLowerCase()) {
+      return interaction.reply(`Winner must be **${g.favorite}** or **${g.underdog}**.`);
+    }
+    await db.execute({ sql: 'UPDATE spread_games SET status = ?, winner = ? WHERE id = ?', args: ['resolved', winner, id] });
+    const bets = await db.execute({ sql: 'SELECT * FROM spread_bets WHERE game_id = ? AND status = ?', args: [id, 'open'] });
+    let paid = 0;
+    for (const b of bets.rows) {
+      if (b.pick.toLowerCase() === winner.toLowerCase()) {
+        await addCoins(b.user_id, b.amount * 2);
+        paid++;
+      }
+      await db.execute({ sql: 'UPDATE spread_bets SET status = ? WHERE id = ?', args: ['resolved', b.id] });
+    }
+    return interaction.reply(`Spread game **#${id}** resolved. **${winner}** covered. Paid out ${paid} winning bet(s).`);
   }
 
   if (interaction.commandName === 'shop') {
