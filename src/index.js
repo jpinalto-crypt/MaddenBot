@@ -212,6 +212,8 @@ const commands = [
     .addIntegerOption(o => o.setName('id').setDescription('Spread game ID').setRequired(true))
     .addStringOption(o => o.setName('winner').setDescription('Team that covered the spread').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('spreadbets').setDescription('See who bet on a spread game')
+    .addIntegerOption(o => o.setName('id').setDescription('Spread game ID').setRequired(true)),
   new SlashCommandBuilder().setName('shop').setDescription('View the shop'),
   new SlashCommandBuilder().setName('buy').setDescription('Buy an item from the shop')
     .addStringOption(o => o.setName('item').setDescription('Item name').setRequired(true)),
@@ -559,6 +561,26 @@ client.on('interactionCreate', async interaction => {
       await db.execute({ sql: 'UPDATE spread_bets SET status = ? WHERE id = ?', args: ['resolved', b.id] });
     }
     return interaction.reply(`Spread game **#${id}** resolved. **${winner}** covered. Paid out ${paid} winning bet(s).`);
+  }
+
+  if (interaction.commandName === 'spreadbets') {
+    const id = interaction.options.getInteger('id');
+    const gameRes = await db.execute({ sql: 'SELECT * FROM spread_games WHERE id = ?', args: [id] });
+    if (!gameRes.rows.length) return interaction.reply('Spread game not found.');
+    const g = gameRes.rows[0];
+    const bets = await db.execute({ sql: 'SELECT * FROM spread_bets WHERE game_id = ? ORDER BY amount DESC', args: [id] });
+    if (!bets.rows.length) return interaction.reply(`No bets on game #${id} yet.`);
+    const lines = await Promise.all(bets.rows.map(async (b) => {
+      const member = await interaction.guild.members.fetch(b.user_id).catch(() => null);
+      const name = member ? member.displayName : `User …${b.user_id.slice(-4)}`;
+      return `**${name}** — ${b.amount} coins on **${b.pick}**`;
+    }));
+    const embed = new EmbedBuilder()
+      .setTitle(`Bets on #${id}: ${g.game}`)
+      .setDescription(lines.join('\n'))
+      .setFooter({ text: `${g.favorite} -${g.spread} vs ${g.underdog}` })
+      .setColor(0x00aaff);
+    return interaction.reply({ embeds: [embed] });
   }
 
   if (interaction.commandName === 'shop') {
