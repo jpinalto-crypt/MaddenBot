@@ -50,6 +50,17 @@ async function initDb() {
       last_daily INTEGER DEFAULT 0
     );
 
+    CREATE TABLE IF NOT EXISTS season_archive (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT,
+      season_label TEXT,
+      wins INTEGER,
+      losses INTEGER,
+      coins INTEGER,
+      superbowls INTEGER,
+      archived_at INTEGER
+    );
+
     CREATE TABLE IF NOT EXISTS shop (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE,
@@ -165,6 +176,10 @@ const commands = [
   new SlashCommandBuilder().setName('sbmvp').setDescription('Award Super Bowl MVP bonus (+250 coins) — Admin only')
     .addUserOption(o => o.setName('user').setDescription('MVP').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('resetseason').setDescription('Archive season: move current SBs to all-time, reset coins/wins/losses/current SBs — Admin only')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('seasonhistory').setDescription('View archived seasons for a user')
+    .addUserOption(o => o.setName('user').setDescription('User (leave blank for yourself)')),
   new SlashCommandBuilder().setName('givecoins').setDescription('Give coins — Admin only')
     .addUserOption(o => o.setName('user').setDescription('Player').setRequired(true))
     .addIntegerOption(o => o.setName('amount').setDescription('Amount').setRequired(true).setMinValue(1))
@@ -398,6 +413,52 @@ client.on('interactionCreate', async interaction => {
     const target = interaction.options.getUser('user');
     await addCoins(target.id, 250);
     return interaction.reply(`${target} awarded **Super Bowl MVP** (+250 coins)!`);
+  }
+
+  if (interaction.commandName === 'resetseason') {
+    await interaction.deferReply();
+    const seasonLabel = `Season ${new Date().getFullYear()}`;
+    const now = Date.now();
+
+    // Archive current stats
+    const users = await db.execute('SELECT user_id, wins, losses, coins, superbowls_current FROM users');
+    for (const u of users.rows) {
+      if (u.wins > 0 || u.losses > 0 || u.coins > 0 || (u.superbowls_current || 0) > 0) {
+        await db.execute({
+          sql: `INSERT INTO season_archive (user_id, season_label, wins, losses, coins, superbowls, archived_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          args: [u.user_id, seasonLabel, u.wins, u.losses, u.coins, u.superbowls_current || 0, now]
+        });
+      }
+    }
+
+    // Move current SBs to all-time and reset
+    await db.execute(`
+      UPDATE users SET
+        superbowls_alltime = superbowls_alltime + COALESCE(superbowls_current, 0),
+        superbowls_current = 0,
+        coins = 0,
+        wins = 0,
+        losses = 0,
+        current_streak = 0
+    `);
+
+    return interaction.editReply(`Season archived as **${seasonLabel}** and reset.\n- Wins/losses/coins/current SBs saved to archive\n- Current Super Bowls added to all-time\n- Everything else reset to 0`);
+  }
+
+  if (interaction.commandName === 'seasonhistory') {
+    const target = interaction.options.getUser('user') || interaction.user;
+    const history = await db.execute({ sql: 'SELECT * FROM season_archive WHERE user_id = ? ORDER BY archived_at DESC', args: [target.id] });
+    if (!history.rows.length) return interaction.reply(`${target.username} has no archived seasons yet.`);
+    const lines = history.rows.map(h => {
+      const date = new Date(h.archived_at).toLocaleDateString();
+      return `**${h.season_label}** (${date})\n${h.wins}W - ${h.losses}L | ${h.coins} coins | ${h.superbowls} SB`;
+    });
+    const embed = new EmbedBuilder()
+      .setTitle(`${target.username}'s Season History`)
+      .setDescription(lines.join('\n\n'))
+      .setColor(0x0099ff);
+    return interaction.reply({ embeds: [embed] });
   }
 
   if (interaction.commandName === 'givecoins') {
